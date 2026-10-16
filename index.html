@@ -1,88 +1,136 @@
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI 提醒助手</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-slate-900 text-white min-h-screen flex flex-col items-center justify-center p-4">
-  <div class="max-w-md w-full bg-slate-800 rounded-2xl p-6 shadow-xl text-center space-y-6">
-    <h1 class="text-2xl font-bold text-blue-400">🤖 AI 語音/打字提醒助手</h1>
-    
-    <!-- API Key 輸入區 -->
-    <div class="text-left bg-slate-700/50 p-3 rounded-lg space-y-2">
-      <label class="text-xs text-slate-300 font-semibold">Google Gemini API Key：</label>
-      <input type="password" id="apiKeyInput" placeholder="貼上你的 API Key (AIza...)" class="w-full bg-slate-800 text-sm px-3 py-2 rounded border border-slate-600 focus:outline-none focus:border-blue-500">
-    </div>
+export default {
+  async fetch(request, env) {
+    const headers = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+      "Content-Type": "application/json"
+    };
 
-    <!-- 提醒內容輸入區 -->
-    <div class="text-left space-y-2">
-      <label class="text-xs text-slate-300 font-semibold">輸入提醒內容：</label>
-      <div class="flex gap-2">
-        <input type="text" id="textInput" placeholder="例：提醒我 10 分鐘後去倒垃圾" class="flex-1 bg-slate-700 text-sm px-3 py-2 rounded border border-slate-600 focus:outline-none focus:border-blue-500">
-        <button id="sendBtn" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm font-semibold transition">傳送</button>
-      </div>
-    </div>
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers });
+    }
 
-    <!-- 結果顯示區 -->
-    <div id="status" class="text-sm text-slate-300 min-h-[80px] flex items-center justify-center bg-slate-700/50 rounded-lg p-3 whitespace-pre-wrap text-left">
-      請貼上 API Key，並輸入提醒內容按下傳送...
-    </div>
-  </div>
+    try {
+      const { text, apiKey, groqKey } = await request.json();
 
-  <script>
-    const apiKeyInput = document.getElementById('apiKeyInput');
-    const textInput = document.getElementById('textInput');
-    const sendBtn = document.getElementById('sendBtn');
-    const status = document.getElementById('status');
+      // LINE 金鑰設定
+      const LINE_ACCESS_TOKEN = "vHtfk/tWm5LnJIS0DoafhefLYtOO8zk2YZdAJd1VFfeswm5QknyrzsXywIO5J07GcE0m7eGFBuhFTwclLajiDK+PGgQdbKqyJ+zZQPMHRuUf6Ro+xe7v07JJM9m/foiY1MJuWNLWr2gNORMqCtwrrAdB04t89/1O/w1cDnyilFU=";
+      const LINE_USER_ID = "Ua9939cd7aaf27f2bf278586dd8327e38";
 
-    // 已串接你剛剛建立的 Cloudflare Worker 後端網址
-    const WORKER_URL = 'https://orange-paper-9d12.a0423956310.workers.dev/';
+      // 🕒 精準取得台灣時間 (Asia/Taipei)
+      const nowTaiwan = new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei" });
+      const promptText = `現在時間是 ${nowTaiwan}。請分析使用者的這句話：「${text}」。\n請以繁體中文回答，解析出兩個資訊：\n1. 提醒標題\n2. 推算出的提醒時間 (YYYY-MM-DD HH:mm:ss)\n並給一段親切的回應。`;
 
-    async function analyzePrompt(userText) {
-      const apiKey = apiKeyInput.value.trim();
-      if (!apiKey) {
-        alert("請先貼上你的 Gemini API Key！");
-        return;
+      let aiResponseText = "";
+      let errors = [];
+
+      // 1. 動態 Groq API 處理
+      if (groqKey && groqKey.trim() !== "") {
+        try {
+          const modelsListRes = await fetch("https://api.groq.com/openai/v1/models", {
+            headers: { "Authorization": `Bearer ${groqKey.trim()}` }
+          });
+          const modelsListData = await modelsListRes.json();
+
+          let targetModel = "llama-3.3-70b-versatile";
+          if (modelsListData.data && modelsListData.data.length > 0) {
+            const validModel = modelsListData.data.find(m => 
+              (m.id.includes("llama") || m.id.includes("gpt") || m.id.includes("mixtral") || m.id.includes("gemma")) &&
+              !m.id.includes("guard") && 
+              !m.id.includes("whisper") && 
+              !m.id.includes("safetensors")
+            );
+            if (validModel) targetModel = validModel.id;
+          }
+
+          const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${groqKey.trim()}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              model: targetModel,
+              messages: [{ role: "user", content: promptText }]
+            })
+          });
+
+          const groqData = await groqRes.json();
+          if (groqData.choices && groqData.choices[0]?.message?.content) {
+            aiResponseText = `[⚡ 由 Groq AI (動態模型: ${targetModel}) 成功解析]\n\n` + groqData.choices[0].message.content;
+          } else if (groqData.error) {
+            errors.push(`Groq (${targetModel}): ${groqData.error.message}`);
+          }
+        } catch (e) {
+          errors.push(`Groq 存取失敗: ${e.message}`);
+        }
       }
 
-      status.innerText = `🗣️ 分析內容：${userText}\n🤖 正在透過雲端 AI 分析中...`;
+      // 2. 備援 Gemini API 處理
+      if (!aiResponseText && apiKey && apiKey.trim() !== "") {
+        const geminiModels = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"];
+        for (const gModel of geminiModels) {
+          try {
+            const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${gModel}:generateContent?key=${apiKey.trim()}`;
+            const res = await fetch(geminiUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ contents: [{ parts: [{ text: promptText }] }] })
+            });
+            const data = await res.json();
+            if (data.candidates && data.candidates[0]?.content?.parts[0]?.text) {
+              aiResponseText = data.candidates[0].content.parts[0].text;
+              break;
+            } else if (data.error && !data.error.message.includes("not found")) {
+              errors.push(`Gemini (${gModel}): ${data.error.message}`);
+            }
+          } catch (e) {
+            errors.push(`Gemini 連線失敗: ${e.message}`);
+          }
+        }
+      }
 
+      if (!aiResponseText) {
+        return new Response(JSON.stringify({ 
+          error: `解析失敗，請確認 API Key 是否正確。\n詳細原因：\n` + errors.join("\n") 
+        }), { headers });
+      }
+
+      // 📲 3. 透過 LINE Messaging API 發送即時確認訊息至手機
+      let lineStatusMessage = "\n\n📱 [LINE 推播] 已發送確認訊息至您的 LINE！";
       try {
-        const response = await fetch(WORKER_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const lineRes = await fetch("https://api.line.me/v2/bot/message/push", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${LINE_ACCESS_TOKEN}`
+          },
           body: JSON.stringify({
-            text: userText,
-            apiKey: apiKey
+            to: LINE_USER_ID,
+            messages: [{
+              type: "text",
+              text: `⏰ 【語音提醒助手通知】\n\n${aiResponseText}`
+            }]
           })
         });
 
-        const data = await response.json();
-        
-        if (data.candidates && data.candidates[0].content.parts[0].text) {
-          const resultText = data.candidates[0].content.parts[0].text;
-          status.innerText = `✅ AI 解析成功：\n\n${resultText}`;
-        } else if (data.error) {
-          status.innerText = `❌ API 回應錯誤：${data.error}`;
-        } else {
-          status.innerText = "❌ 解析失敗，請確認 API Key 是否填寫正確。";
+        if (!lineRes.ok) {
+          const lineErr = await lineRes.json();
+          lineStatusMessage = `\n\n⚠️ [LINE 推播失敗]: ${lineErr.message || '請確認是否已加機器人為好友'}`;
         }
-      } catch (err) {
-        status.innerText = "❌ 連線至雲端服務失敗，請稍後再試。";
-        console.error(err);
+      } catch (e) {
+        lineStatusMessage = `\n\n⚠️ [LINE 連線失敗]: ${e.message}`;
       }
+
+      return new Response(JSON.stringify({
+        candidates: [{
+          content: { parts: [{ text: aiResponseText + lineStatusMessage }] }
+        }]
+      }), { headers });
+
+    } catch (err) {
+      return new Response(JSON.stringify({ error: err.message || String(err) }), { status: 500, headers });
     }
-
-    sendBtn.addEventListener('click', () => {
-      const text = textInput.value.trim();
-      if (text) analyzePrompt(text);
-    });
-
-    textInput.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') sendBtn.click();
-    });
-  </script>
-</body>
-</html>
+  }
+};
